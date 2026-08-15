@@ -1,0 +1,86 @@
+# Assignment B: Hashed Time-Lock Contract (HTLC)
+
+## Scenario
+
+An atomic swap between Alice and Bob:
+- Alice can claim the funds by revealing a secret preimage, within 21 minutes.
+- Bob can claim a refund after 21 minutes have passed, if Alice never claims.
+
+## 1. Complete HTLC Script
+
+```
+OP_IF
+    OP_SHA256 <HashOfSecret> OP_EQUALVERIFY
+    OP_DUP OP_HASH160 <AlicePubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
+OP_ELSE
+    <21_MINUTES_LOCKTIME> OP_CHECKLOCKTIMEVERIFY OP_DROP
+    OP_DUP OP_HASH160 <BobPubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
+OP_ENDIF
+```
+
+**How it works:** the spender chooses which branch to take by pushing
+either `OP_TRUE` (Alice's claim path) or `OP_FALSE` (Bob's refund path)
+right before this script runs.
+
+- **IF branch (Alice's claim):** requires revealing a secret whose
+  SHA-256 hash matches `<HashOfSecret>`, plus a valid signature
+  matching Alice's public key hash.
+- **ELSE branch (Bob's refund):** requires the locktime (21 minutes)
+  to have already passed, plus a valid signature matching Bob's
+  public key hash.
+
+## 2. Claiming Transaction Script (Alice)
+
+```
+<Alice's Signature> <Alice's PublicKey> <Secret Preimage> OP_TRUE
+```
+
+Pushing `OP_TRUE` routes execution into the `OP_IF` branch. The secret
+preimage is hashed with `OP_SHA256` and checked against
+`<HashOfSecret>`; if it matches, Alice's signature and public key are
+then verified against `<AlicePubKeyHash>` via the standard
+`OP_DUP OP_HASH160 ... OP_EQUALVERIFY OP_CHECKSIG` sequence. This must
+happen within the 21-minute window.
+
+## 3. Refund Transaction Script (Bob)
+
+```
+<Bob's Signature> <Bob's PublicKey> OP_FALSE
+```
+
+Pushing `OP_FALSE` routes execution into the `OP_ELSE` branch.
+`OP_CHECKLOCKTIMEVERIFY` checks that the current block time/height has
+passed the 21-minute timeout; if not, the script fails and Bob cannot
+claim yet. If the timeout has passed, `OP_DROP` removes the locktime
+value from the stack, and Bob's signature and public key are verified
+the same way as Alice's, against `<BobPubKeyHash>`.
+
+## 4. Test with Sample Hash and Timeout
+
+Secret preimage:   "supersecret123"
+HashOfSecret:       SHA256("supersecret123")
+                     -> (32-byte hash, computed once and embedded in the script)
+Timeout:             21 minutes
+                     -> on mainnet, roughly 2 blocks (avg. 10 min/block)
+                     -> on regtest, blocks are mined manually, so the
+                        timeout can instead use OP_CHECKSEQUENCEVERIFY
+                        with a relative time, or blocks can simply be
+                        mined forward past the target height for testing
+
+**Test case 1 — Alice claims successfully:**
+Alice reveals `"supersecret123"` and provides a valid signature within
+21 minutes. `OP_SHA256` of the preimage matches `<HashOfSecret>`, and
+`OP_CHECKSIG` succeeds. The `OP_IF` branch completes with `TRUE` left
+on the stack — the spend is valid.
+
+**Test case 2 — Bob claims a refund successfully:**
+21 minutes pass with no claim from Alice. Bob submits his refund
+script. `OP_CHECKLOCKTIMEVERIFY` passes since the timeout has elapsed,
+and `OP_CHECKSIG` succeeds with Bob's signature. The `OP_ELSE` branch
+completes with `TRUE` — the refund is valid.
+
+**Test case 3 — Bob attempts an early refund (should fail):**
+Bob tries to claim before the 21-minute timeout has passed.
+`OP_CHECKLOCKTIMEVERIFY` fails because the current time/block height
+has not yet reached the required threshold. The script halts, and the
+transaction is rejected by the network.
