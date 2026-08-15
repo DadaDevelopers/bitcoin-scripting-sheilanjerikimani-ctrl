@@ -1,0 +1,84 @@
+# Assignment A: P2PKH Script Breakdown
+
+## Script
+
+```
+OP_DUP OP_HASH160 <PubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
+```
+
+This is the `scriptPubKey` — the "lock" placed on a Pay-to-Public-Key-Hash
+(P2PKH) output when Bitcoin is sent to an address. To spend it, the
+spender must supply a `scriptSig` containing `<Signature> <PublicKey>`,
+which gets combined with this script and executed together.
+
+## 1. Opcode-by-opcode breakdown
+
+| Opcode | Purpose |
+|---|---|
+| `OP_DUP` | Duplicates the top stack item (the public key supplied by the spender). One copy is needed for hashing and comparison; the second is needed later for the signature check. |
+| `OP_HASH160` | Hashes the duplicated public key using SHA-256 followed by RIPEMD-160, producing a 20-byte hash. |
+| `<PubKeyHash>` | Not an opcode — this is data embedded directly in the script when the address was created: the expected public key hash. |
+| `OP_EQUALVERIFY` | Compares the freshly computed hash against `<PubKeyHash>`. If they don't match, script execution fails immediately. |
+| `OP_CHECKSIG` | Verifies that the supplied signature is valid for this transaction, using the public key. Confirms the spender actually owns the matching private key. |
+
+## 2. Data flow diagram
+
+```
+Spender supplies (scriptSig):  <Signature> <PublicKey>
+
+Initial stack (scriptSig runs first):
+  [ PublicKey ]
+  [ Signature ]
+
+--- scriptPubKey begins executing ---
+
+OP_DUP:
+  [ PublicKey ]
+  [ PublicKey ]
+  [ Signature ]
+
+OP_HASH160:
+  [ HASH160(PublicKey) ]
+  [ PublicKey ]
+  [ Signature ]
+
+<PubKeyHash> pushed onto stack:
+  [ PubKeyHash ]
+  [ HASH160(PublicKey) ]
+  [ PublicKey ]
+  [ Signature ]
+
+OP_EQUALVERIFY:
+  (Compares top two items. If equal, both are removed and execution
+   continues. If not equal, the script fails here.)
+  [ PublicKey ]
+  [ Signature ]
+
+OP_CHECKSIG:
+  (Checks that Signature is valid for PublicKey against this transaction.)
+  [ TRUE ]   <- if valid
+  [ FALSE ]  <- if invalid
+```
+
+## 3. What happens if signature verification fails
+
+If `OP_CHECKSIG` cannot verify the signature against the supplied public
+key, it pushes `FALSE` onto the stack instead of `TRUE`. Since Bitcoin
+script requires the final value left on the stack to be `TRUE`
+(non-zero) for the spend to be valid, the entire transaction is
+rejected by the network. It cannot be included in a block, and no
+funds move. This also applies if `OP_EQUALVERIFY` fails earlier — the
+script halts immediately at that point, and `OP_CHECKSIG` never even
+runs.
+
+## 4. Security benefit of hash verification
+
+Using `OP_HASH160` means the blockchain only ever stores a **hash** of
+the public key inside the address (`<PubKeyHash>`) — never the actual
+public key itself — until the moment the funds are spent. This
+protects unspent outputs: even if a future cryptographic weakness
+allowed someone to derive a private key from an exposed public key,
+addresses that haven't been spent from yet remain safe, since their
+real public key has never been revealed on-chain. The public key is
+only exposed at the moment of spending, inside the `scriptSig`,
+minimizing the window of exposure.
